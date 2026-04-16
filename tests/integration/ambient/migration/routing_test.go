@@ -106,42 +106,42 @@ spec:
 // then migrates to ambient mode with an equivalent HTTPRoute attached to a waypoint.
 func TestHTTPRouteThroughWaypoint(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		ctx.Cleanup(func() { resetToSidecarMode(ctx) })
+		env := newTestEnv(ctx, withVersionedServers())
 
 		const waypointName = "routing-wp"
 
-		httpPort := server.Config().Ports.MustForName("http")
+		httpPort := env.server.Config().Ports.MustForName("http")
 
 		// Step 1: Apply VirtualService + DestinationRule for header-based routing.
 		// Requests with "end-user: jason" → server-v2, default → server-v1.
-		vsCfg := fmt.Sprintf(headerRoutingVS, ns.Name(), ns.Name(), ns.Name(), ns.Name())
+		vsCfg := fmt.Sprintf(headerRoutingVS, env.ns.Name(), env.ns.Name(), env.ns.Name(), env.ns.Name())
 		ctx.Log("Applying VirtualService + DestinationRule for header-based routing")
-		ctx.ConfigIstio().YAML(ns.Name(), vsCfg).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), vsCfg).ApplyOrFail(ctx)
 
 		// Step 2: Verify header-based routing works under sidecar mode.
 		ctx.Log("Verifying header-based routing under sidecar mode")
 
 		// Default traffic → server-v1.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
-				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, "v1"))),
+				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, env.server, "v1"))),
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Header "end-user: jason" → server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Headers: headers.New().With("end-user", "jason").Build(),
 				},
 				Count: 1,
-				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, "v2"))),
+				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, env.server, "v2"))),
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
@@ -149,24 +149,24 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 
 		// Step 3: Deploy waypoint; create HTTPRoute with parentRefs to Service.
 		ctx.Log("Deploying waypoint and creating HTTPRoute")
-		deployWaypoint(ctx, waypointName)
+		deployWaypoint(ctx, env.ns, waypointName)
 		httpRouteCfg := fmt.Sprintf(headerRoutingHTTPRoute, "server", httpPort.ServicePort, httpPort.ServicePort)
-		ctx.ConfigIstio().YAML(ns.Name(), httpRouteCfg).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), httpRouteCfg).ApplyOrFail(ctx)
 
 		// Step 4: Delete the VirtualService + DestinationRule.
 		ctx.Log("Deleting VirtualService + DestinationRule")
-		ctx.ConfigIstio().YAML(ns.Name(), vsCfg).DeleteOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), vsCfg).DeleteOrFail(ctx)
 
 		// Step 5: Activate waypoint, enable ambient, remove injection, restart pods.
-		ambient.SetWaypointForNamespace(ctx, ns, waypointName)
-		migrateNSToAmbient(ctx)
-		restartWorkloads(ctx, server, serverV1, serverV2, client)
+		ambient.SetWaypointForNamespace(ctx, env.ns, waypointName)
+		migrateNSToAmbient(ctx, env.ns)
+		restartWorkloads(ctx, env.server, env.serverV1, env.serverV2, env.client)
 
 		// Wait for ambient connectivity.
 		ctx.Log("Waiting for ambient connectivity through waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.And(check.OK(), isL7()),
@@ -179,25 +179,25 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 
 		// Default traffic → server-v1.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
-				Check: check.And(check.OK(), isL7(), check.Hostname(serverV1.WorkloadsOrFail(ctx)[0].PodName())),
+				Check: check.And(check.OK(), isL7(), check.Hostname(env.serverV1.WorkloadsOrFail(ctx)[0].PodName())),
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Header "end-user: jason" → server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Headers: headers.New().With("end-user", "jason").Build(),
 				},
 				Count: 1,
-				Check: check.And(check.OK(), isL7(), check.Hostname(serverV2.WorkloadsOrFail(ctx)[0].PodName())),
+				Check: check.And(check.OK(), isL7(), check.Hostname(env.serverV2.WorkloadsOrFail(ctx)[0].PodName())),
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))

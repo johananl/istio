@@ -22,7 +22,6 @@ import (
 	"testing"
 	"time"
 
-	"istio.io/api/label"
 	"istio.io/istio/pkg/config/protocol"
 	"istio.io/istio/pkg/test/echo/common/scheme"
 	"istio.io/istio/pkg/test/framework"
@@ -47,28 +46,24 @@ spec:
 // does not cause significant packet loss or latency.
 func TestSidecarToAmbientMigration(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		ctx.Cleanup(func() { resetToSidecarMode(ctx) })
-
 		// Run the migration with PeerAuthentication in permissive mode. Running in permissive mode
 		// may result in a brief window of unencrypted traffic during the transition to ambient.
 		ctx.NewSubTest("permissive").Run(func(ctx framework.TestContext) {
-			runMigrationTest(ctx, 1.0)
+			env := newTestEnv(ctx)
+			runMigrationTest(ctx, env, 1.0)
 		})
-
-		// Reset the namespace back to sidecar mode so the next sub-test starts from the same
-		// initial state.
-		resetToSidecarMode(ctx)
 
 		// Run the migration with PeerAuthentication in strict mode. No plaintext traffic is
 		// allowed in this mode. This might reveal failures which don't show in permissive mode.
 		ctx.NewSubTest("strict-mtls").Run(func(ctx framework.TestContext) {
-			ctx.ConfigIstio().YAML(ns.Name(), peerAuthenticationStrict).ApplyOrFail(ctx)
+			env := newTestEnv(ctx)
+			ctx.ConfigIstio().YAML(env.ns.Name(), peerAuthenticationStrict).ApplyOrFail(ctx)
 
 			// Let the policy propagate before starting traffic.
 			ctx.Log("Waiting for strict PeerAuthentication to propagate")
 			retry.UntilSuccessOrFail(ctx, func() error {
-				_, err := client.Call(echo.CallOptions{
-					To:    server,
+				_, err := env.client.Call(echo.CallOptions{
+					To:    env.server,
 					Port:  echo.Port{Name: "http"},
 					Count: 1,
 					Check: check.OK(),
@@ -77,7 +72,7 @@ func TestSidecarToAmbientMigration(t *testing.T) {
 			}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 			ctx.Log("Strict PeerAuthentication active — sidecar mTLS verified")
 
-			runMigrationTest(ctx, 1.0)
+			runMigrationTest(ctx, env, 1.0)
 		})
 	})
 }
@@ -121,39 +116,45 @@ spec:
 // significantly disrupted when migrating the server workload from sidecar to ambient mode.
 func TestNorthSouthMigration(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		ctx.Cleanup(func() { resetToSidecarMode(ctx) })
-
-		// Apply Istio Gateway + VirtualService routing ingress traffic to the server.
-		httpPort := server.Config().Ports.MustForName("http")
-		gwCfg := fmt.Sprintf(ingressGatewayConfig, server.Config().Service, httpPort.ServicePort)
-		ctx.ConfigIstio().YAML(ns.Name(), gwCfg).ApplyOrFail(ctx)
-
-		ingress := istio.DefaultIngressOrFail(ctx, ctx)
-
-		// Wait for ingress to be able to reach the server.
-		ctx.Log("Waiting for ingress connectivity to server")
-		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := ingress.Call(echo.CallOptions{
-				Port: echo.Port{
-					Protocol:    protocol.HTTP,
-					ServicePort: 80,
-				},
-				Scheme: scheme.HTTP,
-				Count:  1,
-				Check:  check.OK(),
-			})
-			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
-		ctx.Log("Ingress connectivity verified under sidecar mode")
-
 		ctx.NewSubTest("permissive").Run(func(ctx framework.TestContext) {
-			runNorthSouthMigrationTest(ctx, ingress, 1.0)
+			env := newTestEnv(ctx)
+
+			// Apply Istio Gateway + VirtualService routing ingress traffic to the server.
+			httpPort := env.server.Config().Ports.MustForName("http")
+			gwCfg := fmt.Sprintf(ingressGatewayConfig, env.server.Config().Service, httpPort.ServicePort)
+			ctx.ConfigIstio().YAML(env.ns.Name(), gwCfg).ApplyOrFail(ctx)
+
+			ingress := istio.DefaultIngressOrFail(ctx, ctx)
+
+			// Wait for ingress to be able to reach the server.
+			ctx.Log("Waiting for ingress connectivity to server")
+			retry.UntilSuccessOrFail(ctx, func() error {
+				_, err := ingress.Call(echo.CallOptions{
+					Port: echo.Port{
+						Protocol:    protocol.HTTP,
+						ServicePort: 80,
+					},
+					Scheme: scheme.HTTP,
+					Count:  1,
+					Check:  check.OK(),
+				})
+				return err
+			}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
+			ctx.Log("Ingress connectivity verified under sidecar mode")
+
+			runNorthSouthMigrationTest(ctx, env, ingress, 1.0)
 		})
 
-		resetToSidecarMode(ctx)
-
 		ctx.NewSubTest("strict-mtls").Run(func(ctx framework.TestContext) {
-			ctx.ConfigIstio().YAML(ns.Name(), peerAuthenticationStrict).ApplyOrFail(ctx)
+			env := newTestEnv(ctx)
+
+			httpPort := env.server.Config().Ports.MustForName("http")
+			gwCfg := fmt.Sprintf(ingressGatewayConfig, env.server.Config().Service, httpPort.ServicePort)
+			ctx.ConfigIstio().YAML(env.ns.Name(), gwCfg).ApplyOrFail(ctx)
+
+			ingress := istio.DefaultIngressOrFail(ctx, ctx)
+
+			ctx.ConfigIstio().YAML(env.ns.Name(), peerAuthenticationStrict).ApplyOrFail(ctx)
 
 			ctx.Log("Waiting for strict PeerAuthentication to propagate")
 			retry.UntilSuccessOrFail(ctx, func() error {
@@ -167,17 +168,17 @@ func TestNorthSouthMigration(t *testing.T) {
 					Check:  check.OK(),
 				})
 				return err
-			}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
+			}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 			ctx.Log("Strict PeerAuthentication active — ingress mTLS verified")
 
-			runNorthSouthMigrationTest(ctx, ingress, 1.0)
+			runNorthSouthMigrationTest(ctx, env, ingress, 1.0)
 		})
 	})
 }
 
 // runMigrationTest executes the sidecar-to-ambient migration flow with a continuous traffic
 // generator measuring disruption.
-func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
+func runMigrationTest(ctx framework.TestContext, env *testEnv, minSuccessRate float64) {
 	const (
 		preMigrationDuration  = 5 * time.Second
 		postMigrationDuration = 30 * time.Second
@@ -186,8 +187,8 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 	)
 
 	ctx.Log("Verifying sidecar connectivity")
-	client.CallOrFail(ctx, echo.CallOptions{
-		To:    server,
+	env.client.CallOrFail(ctx, echo.CallOptions{
+		To:    env.server,
 		Port:  echo.Port{Name: "http"},
 		Count: 5,
 		Check: check.OK(),
@@ -195,9 +196,9 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 	ctx.Log("Sidecar connectivity verified")
 
 	trafficCfg := traffic.Config{
-		Source: client,
+		Source: env.client,
 		Options: echo.CallOptions{
-			To:    server,
+			To:    env.server,
 			Port:  echo.Port{Name: "http"},
 			Count: requestsPerRound,
 			// Short per-request timeout so that a hung connection during pod restart is counted as
@@ -217,17 +218,12 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 	time.Sleep(preMigrationDuration)
 
 	ctx.Log("Migrating namespace to ambient mode")
-	if err := ns.RemoveLabel("istio-injection"); err != nil {
-		ctx.Fatalf("failed to remove sidecar injection label: %v", err)
-	}
-	if err := ns.SetLabel(label.IoIstioDataplaneMode.Name, "ambient"); err != nil {
-		ctx.Fatalf("failed to set ambient dataplane mode: %v", err)
-	}
+	migrateNSToAmbient(ctx, env.ns)
 
 	ctx.Log("Restarting server for switching to ambient")
 	// Restart() is blocking. The traffic generator keeps running and records every success/failure
 	// during this window.
-	if err := server.Restart(); err != nil {
+	if err := env.server.Restart(); err != nil {
 		ctx.Fatalf("failed to restart server: %v", err)
 	}
 
@@ -240,15 +236,15 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 	ctx.Logf("  %s", migrationResult)
 
 	ctx.Log("Restarting client for switching to ambient")
-	if err := client.Restart(); err != nil {
+	if err := env.client.Restart(); err != nil {
 		ctx.Fatalf("failed to restart client: %v", err)
 	}
 	ctx.Log("Workloads restarted — pods now running without sidecars")
 
 	ctx.Log("Waiting for ambient connectivity")
 	retry.UntilSuccessOrFail(ctx, func() error {
-		_, err := client.Call(echo.CallOptions{
-			To:    server,
+		_, err := env.client.Call(echo.CallOptions{
+			To:    env.server,
 			Port:  echo.Port{Name: "http"},
 			Count: 1,
 			Check: check.OK(),
@@ -276,7 +272,7 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 
 // runNorthSouthMigrationTest executes the sidecar-to-ambient migration flow with continuous
 // north-south traffic (ingress gateway → server) measuring disruption.
-func runNorthSouthMigrationTest(ctx framework.TestContext, ingress echo.Caller, minSuccessRate float64) {
+func runNorthSouthMigrationTest(ctx framework.TestContext, env *testEnv, ingress echo.Caller, minSuccessRate float64) {
 	const (
 		preMigrationDuration  = 5 * time.Second
 		postMigrationDuration = 30 * time.Second
@@ -306,15 +302,10 @@ func runNorthSouthMigrationTest(ctx framework.TestContext, ingress echo.Caller, 
 	time.Sleep(preMigrationDuration)
 
 	ctx.Log("Migrating namespace to ambient mode")
-	if err := ns.RemoveLabel("istio-injection"); err != nil {
-		ctx.Fatalf("failed to remove sidecar injection label: %v", err)
-	}
-	if err := ns.SetLabel(label.IoIstioDataplaneMode.Name, "ambient"); err != nil {
-		ctx.Fatalf("failed to set ambient dataplane mode: %v", err)
-	}
+	migrateNSToAmbient(ctx, env.ns)
 
 	ctx.Log("Restarting server for switching to ambient")
-	if err := server.Restart(); err != nil {
+	if err := env.server.Restart(); err != nil {
 		ctx.Fatalf("failed to restart server: %v", err)
 	}
 

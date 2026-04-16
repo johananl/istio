@@ -53,17 +53,19 @@ spec:
 // migration path of switching from selector-based to targetRefs-based policy.
 func TestL7AuthorizationPolicyMigration(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
+		env := newTestEnv(ctx)
+
 		const waypointName = "l7-migration-wp"
 
 		// Step 1: Apply L7 AuthorizationPolicy with selector (sidecar-style).
 		ctx.Log("Applying selector-based L7 AuthorizationPolicy")
-		ctx.ConfigIstio().YAML(ns.Name(), l7AuthzPolicySidecar).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), l7AuthzPolicySidecar).ApplyOrFail(ctx)
 
 		// Step 2: Verify enforcement under sidecar mode.
 		ctx.Log("Verifying L7 policy enforcement under sidecar mode")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Method: "GET",
@@ -76,8 +78,8 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// POST should be denied.
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "POST",
@@ -90,36 +92,27 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 
 		// Step 3: Deploy waypoint and apply targetRefs-based L7 policy.
 		ctx.Log("Deploying waypoint and applying targetRefs-based L7 policy")
-		deployWaypoint(ctx, waypointName)
+		deployWaypoint(ctx, env.ns, waypointName)
 		waypointPolicy := fmt.Sprintf(l7AuthzPolicyWaypoint, waypointName)
-		ctx.ConfigIstio().YAML(ns.Name(), waypointPolicy).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), waypointPolicy).ApplyOrFail(ctx)
 
 		// Step 4: Activate waypoint for the namespace.
-		ambient.SetWaypointForNamespace(ctx, ns, waypointName)
-
-		// Register cleanup AFTER SetWaypointForNamespace. Cleanups run in LIFO
-		// order, so this executes before SetWaypointForNamespace's internal cleanup
-		// that restores pre-waypoint namespace labels (which lack the ambient label
-		// added by migrateNSToAmbient below).
-		ctx.Cleanup(func() {
-			ambient.DeleteWaypoint(ctx, ns, waypointName)
-			resetToSidecarMode(ctx)
-		})
+		ambient.SetWaypointForNamespace(ctx, env.ns, waypointName)
 
 		// Step 5: Delete the old selector-based L7 policy before migrating.
 		// In ambient mode ztunnel cannot evaluate L7 ALLOW rules and applies a
 		// blanket DENY, so the selector-based policy must be removed first.
 		ctx.Log("Deleting old selector-based L7 policy before ambient migration")
-		ctx.ConfigIstio().YAML(ns.Name(), l7AuthzPolicySidecar).DeleteOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), l7AuthzPolicySidecar).DeleteOrFail(ctx)
 
 		// Step 6: Enable ambient mode, remove sidecar injection, restart server.
-		migrateNSToAmbient(ctx)
-		restartWorkloads(ctx, server, client)
+		migrateNSToAmbient(ctx, env.ns)
+		restartWorkloads(ctx, env.server, env.client)
 
 		ctx.Log("Waiting for ambient connectivity through waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Method: "GET",
@@ -134,8 +127,8 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 		// Step 7: Verify enforcement via waypoint.
 		ctx.Log("Verifying L7 policy enforcement via waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Method: "GET",
@@ -148,8 +141,8 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// POST should still be denied by waypoint.
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "POST",
@@ -162,8 +155,8 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 
 		// Step 8: Verify no ztunnel blanket DENY (GET on an unrestricted path
 		// that the ALLOW rule covers should succeed).
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "GET",
@@ -180,20 +173,20 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 // L4-only policies during sidecar-to-ambient migration.
 func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		ctx.Cleanup(func() { resetToSidecarMode(ctx) })
+		env := newTestEnv(ctx, withCrossClient())
 
 		// Step 1: Apply L4 AuthorizationPolicy allowing only client's SA.
 		// The echo framework uses the service name as the SA when ServiceAccount is
 		// not explicitly set — for the default SA we use "default".
-		policy := fmt.Sprintf(l4AuthzPolicy, ns.Name(), "default")
+		policy := fmt.Sprintf(l4AuthzPolicy, env.ns.Name(), "default")
 		ctx.Log("Applying L4 AuthorizationPolicy allowing client SA")
-		ctx.ConfigIstio().YAML(ns.Name(), policy).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), policy).ApplyOrFail(ctx)
 
 		// Step 2: Verify enforcement under sidecar mode.
 		ctx.Log("Verifying L4 policy enforcement under sidecar mode")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.OK(),
@@ -203,8 +196,8 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 
 		// crossClient (different namespace, different SA) should be denied.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := crossClient.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.crossClient.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.NotOK(),
@@ -214,16 +207,16 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 		ctx.Log("L4 policy enforced under sidecar: client allowed, crossClient denied")
 
 		// Step 3: Migrate namespace to ambient (no waypoint needed for L4).
-		migrateNSToAmbient(ctx)
+		migrateNSToAmbient(ctx, env.ns)
 
 		// Step 4: Restart server + client.
-		restartWorkloads(ctx, server, client)
+		restartWorkloads(ctx, env.server, env.client)
 
 		// Step 5: Verify same L4 policy still enforced by ztunnel.
 		ctx.Log("Verifying L4 policy enforcement under ambient mode")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.OK(),
@@ -233,8 +226,8 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 
 		// crossClient should still be denied after migration.
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := crossClient.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.crossClient.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.NotOK(),
@@ -275,26 +268,20 @@ spec:
 // hardening pattern that prevents sidecar clients from bypassing the waypoint.
 func TestWaypointBypassPrevention(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
+		env := newTestEnv(ctx, withCrossClient())
+
 		const waypointName = "bypass-prevention-wp"
 
 		// Step 1: Migrate ns to ambient with a waypoint activated.
-		deployWaypoint(ctx, waypointName)
-		ambient.SetWaypointForNamespace(ctx, ns, waypointName)
-
-		// Register cleanup AFTER SetWaypointForNamespace so LIFO ordering
-		// ensures we reset the namespace before the framework restores
-		// pre-waypoint labels.
-		ctx.Cleanup(func() {
-			ambient.DeleteWaypoint(ctx, ns, waypointName)
-			resetToSidecarMode(ctx)
-		})
-		migrateNSToAmbient(ctx)
-		restartWorkloads(ctx, server, client)
+		deployWaypoint(ctx, env.ns, waypointName)
+		ambient.SetWaypointForNamespace(ctx, env.ns, waypointName)
+		migrateNSToAmbient(ctx, env.ns)
+		restartWorkloads(ctx, env.server, env.client)
 
 		ctx.Log("Waiting for ambient connectivity through waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.And(check.OK(), isL7()),
@@ -303,17 +290,17 @@ func TestWaypointBypassPrevention(t *testing.T) {
 		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// Step 2: Apply ALLOW policy permitting only the waypoint SA.
-		policy := fmt.Sprintf(allowOnlyWaypointPolicy, ns.Name(), waypointName)
+		policy := fmt.Sprintf(allowOnlyWaypointPolicy, env.ns.Name(), waypointName)
 		ctx.Log("Applying waypoint bypass prevention ALLOW policy")
-		ctx.ConfigIstio().YAML(ns.Name(), policy).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), policy).ApplyOrFail(ctx)
 
 		// Step 3: client (ambient, same namespace) calls server — succeeds
 		// (traffic goes through the waypoint, so the source principal is the
 		// waypoint SA which matches the ALLOW rule).
 		ctx.Log("Verifying ambient client can reach server through waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.And(check.OK(), isL7()),
@@ -327,8 +314,8 @@ func TestWaypointBypassPrevention(t *testing.T) {
 		// lack thereof on the passthrough path) does not match the ALLOW rule.
 		ctx.Log("Verifying sidecar crossClient is denied (bypasses waypoint)")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := crossClient.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.crossClient.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.NotOK(),

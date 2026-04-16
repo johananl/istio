@@ -23,7 +23,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"istio.io/api/label"
 	"istio.io/istio/pkg/config/constants"
@@ -37,20 +36,146 @@ import (
 	"istio.io/istio/pkg/test/framework/components/istio"
 	"istio.io/istio/pkg/test/framework/components/namespace"
 	"istio.io/istio/pkg/test/framework/resource"
-	"istio.io/istio/pkg/test/util/retry"
 	"istio.io/istio/tests/integration/security/util/cert"
 )
 
-var (
-	ist         istio.Instance
+var ist istio.Instance
+
+// testEnv holds per-test isolated namespaces and echo deployments, preventing cross-test
+// interference and enabling parallel execution.
+type testEnv struct {
 	ns          namespace.Instance
-	nsSidecar   namespace.Instance
+	nsSidecar   namespace.Instance // Nil unless WithCrossClient is passed to newTestEnv
 	client      echo.Instance
 	server      echo.Instance
-	serverV1    echo.Instance
-	serverV2    echo.Instance
-	crossClient echo.Instance
-)
+	serverV1    echo.Instance // Nil unless WithVersionedServers is passed to newTestEnv
+	serverV2    echo.Instance // Nil unless WithVersionedServers is passed to newTestEnv
+	crossClient echo.Instance // Nil unless WithCrossClient is passed to newTestEnv
+}
+
+// testEnvOption configures optional deployments in newTestEnv.
+type testEnvOption func(*testEnvConfig)
+
+type testEnvConfig struct {
+	crossClient     bool
+	versionedServer bool
+}
+
+// withCrossClient deploys a sidecar-injected client in a separate namespace.
+func withCrossClient() testEnvOption {
+	return func(c *testEnvConfig) { c.crossClient = true }
+}
+
+// withVersionedServers deploys server-v1 and server-v2 single-subset echo instances.
+func withVersionedServers() testEnvOption {
+	return func(c *testEnvConfig) { c.versionedServer = true }
+}
+
+// newTestEnv creates isolated namespaces and echo deployments for a single test. Resources are
+// automatically cleaned up when the test context completes.
+func newTestEnv(ctx framework.TestContext, opts ...testEnvOption) *testEnv {
+	ctx.Helper()
+	var cfg testEnvConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	env := &testEnv{}
+	var err error
+	env.ns, err = namespace.New(ctx, namespace.Config{
+		Prefix: "sidecar-to-ambient",
+		Inject: true,
+	})
+	if err != nil {
+		ctx.Fatal(err)
+	}
+
+	builder := deployment.New(ctx).
+		With(&env.client, echo.Config{
+			Service:   "client",
+			Namespace: env.ns,
+			Ports:     []echo.Port{},
+		}).
+		With(&env.server, echo.Config{
+			Service:   "server",
+			Namespace: env.ns,
+			Ports: []echo.Port{
+				{
+					Name:         "http",
+					Protocol:     protocol.HTTP,
+					WorkloadPort: 8090,
+				},
+			},
+			Subsets: []echo.SubsetConfig{
+				{Version: "v1"},
+				{Version: "v2"},
+			},
+		})
+
+	if cfg.versionedServer {
+		builder = builder.
+			With(&env.serverV1, echo.Config{
+				Service:   "server-v1",
+				Namespace: env.ns,
+				Ports: []echo.Port{
+					{
+						Name:         "http",
+						Protocol:     protocol.HTTP,
+						WorkloadPort: 8090,
+					},
+				},
+				Subsets: []echo.SubsetConfig{
+					{
+						Version: "v1",
+						Labels: map[string]string{
+							"app":     "server-v1",
+							"version": "v1",
+						},
+					},
+				},
+			}).
+			With(&env.serverV2, echo.Config{
+				Service:   "server-v2",
+				Namespace: env.ns,
+				Ports: []echo.Port{
+					{
+						Name:         "http",
+						Protocol:     protocol.HTTP,
+						WorkloadPort: 8090,
+					},
+				},
+				Subsets: []echo.SubsetConfig{
+					{
+						Version: "v2",
+						Labels: map[string]string{
+							"app":     "server-v2",
+							"version": "v2",
+						},
+					},
+				},
+			})
+	}
+
+	if cfg.crossClient {
+		env.nsSidecar, err = namespace.New(ctx, namespace.Config{
+			Prefix: "sidecar-cross",
+			Inject: true,
+		})
+		if err != nil {
+			ctx.Fatal(err)
+		}
+		builder = builder.With(&env.crossClient, echo.Config{
+			Service:   "cross-client",
+			Namespace: env.nsSidecar,
+			Ports:     []echo.Port{},
+		})
+	}
+
+	if _, err := builder.Build(); err != nil {
+		ctx.Fatal(err)
+	}
+	return env
+}
 
 const ambientControlPlaneValues = `
 values:
@@ -63,8 +188,7 @@ values:
       SECRET_TTL: 5m
 `
 
-// TestMain sets up Istio with both sidecar injection and ambient mode (CNI + ztunnel)
-// deployed in parallel, then creates a namespace with sidecar injection enabled.
+// TestMain sets up Istio with both sidecar injection and ambient mode (CNI + ztunnel).
 func TestMain(m *testing.M) {
 	framework.
 		NewSuite(m).
@@ -78,94 +202,7 @@ func TestMain(m *testing.M) {
 			cfg.DeployEastWestGW = false
 			cfg.ControlPlaneValues = ambientControlPlaneValues
 		}, cert.CreateCASecretAlt)).
-		Setup(func(ctx resource.Context) error {
-			var err error
-			ns, err = namespace.New(ctx, namespace.Config{
-				Prefix: "sidecar-to-ambient",
-				Inject: true,
-			})
-			if err != nil {
-				return err
-			}
-			nsSidecar, err = namespace.New(ctx, namespace.Config{
-				Prefix: "sidecar-cross",
-				Inject: true,
-			})
-			return err
-		}).
-		Setup(setupEcho).
 		Run()
-}
-
-func setupEcho(ctx resource.Context) error {
-	_, err := deployment.New(ctx).
-		With(&client, echo.Config{
-			Service:   "client",
-			Namespace: ns,
-			Ports:     []echo.Port{},
-		}).
-		With(&server, echo.Config{
-			Service:   "server",
-			Namespace: ns,
-			Ports: []echo.Port{
-				{
-					Name:         "http",
-					Protocol:     protocol.HTTP,
-					WorkloadPort: 8090,
-				},
-			},
-			Subsets: []echo.SubsetConfig{
-				{Version: "v1"},
-				{Version: "v2"},
-			},
-		}).
-		With(&serverV1, echo.Config{
-			Service:   "server-v1",
-			Namespace: ns,
-			Ports: []echo.Port{
-				{
-					Name:         "http",
-					Protocol:     protocol.HTTP,
-					WorkloadPort: 8090,
-				},
-			},
-			Subsets: []echo.SubsetConfig{
-				{
-					Version: "v1",
-					Labels: map[string]string{
-						"app":     "server-v1",
-						"version": "v1",
-					},
-				},
-			},
-		}).
-		With(&serverV2, echo.Config{
-			Service:   "server-v2",
-			Namespace: ns,
-			Ports: []echo.Port{
-				{
-					Name:         "http",
-					Protocol:     protocol.HTTP,
-					WorkloadPort: 8090,
-				},
-			},
-			Subsets: []echo.SubsetConfig{
-				{
-					Version: "v2",
-					Labels: map[string]string{
-						"app":     "server-v2",
-						"version": "v2",
-					},
-				},
-			},
-		}).
-		With(&crossClient, echo.Config{
-			Service:   "cross-client",
-			Namespace: nsSidecar,
-			Ports:     []echo.Port{},
-		}).
-		Build()
-	return err
 }
 
 const (
@@ -210,38 +247,11 @@ spec:
 `
 )
 
-// resetToSidecarMode restores the shared namespace and workloads to sidecar injection mode so that
-// a subsequent sub-test starts from a clean state.
-func resetToSidecarMode(ctx framework.TestContext) {
-	ctx.Log("Resetting namespace to sidecar injection mode")
-	if err := ns.RemoveLabel(label.IoIstioDataplaneMode.Name); err != nil {
-		ctx.Logf("removing ambient label (may not exist yet): %v", err)
-	}
-	if err := ns.SetLabel("istio-injection", "enabled"); err != nil {
-		ctx.Fatalf("re-enabling sidecar injection: %v", err)
-	}
-
-	ctx.Log("Restarting workloads to re-inject sidecars")
-	restartWorkloads(ctx, server, serverV1, serverV2, client)
-
-	// Verify sidecars are back.
-	retry.UntilSuccessOrFail(ctx, func() error {
-		_, err := client.Call(echo.CallOptions{
-			To:    server,
-			Port:  echo.Port{Name: "http"},
-			Count: 1,
-			Check: check.OK(),
-		})
-		return err
-	}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
-	ctx.Log("Namespace reset to sidecar mode")
-}
-
 // serverPodByVersion returns the pod name of the server workload matching the given version
-// (e.g. "v1" or "v2"). It searches the server echo instance's workloads.
-func serverPodByVersion(ctx framework.TestContext, version string) string {
+// (e.g. "v1" or "v2"). It searches the given server echo instance's workloads.
+func serverPodByVersion(ctx framework.TestContext, srv echo.Instance, version string) string {
 	prefix := "server-" + version + "-"
-	for _, w := range server.WorkloadsOrFail(ctx) {
+	for _, w := range srv.WorkloadsOrFail(ctx) {
 		if strings.HasPrefix(w.PodName(), prefix) {
 			return w.PodName()
 		}
@@ -250,29 +260,28 @@ func serverPodByVersion(ctx framework.TestContext, version string) string {
 	return ""
 }
 
-// deployWaypoint deploys a service-traffic waypoint proxy into ns and waits for it to be ready.
-// It is intended to be called mid-test (not in TestMain) since waypoints are only needed after
-// migration begins.
-func deployWaypoint(ctx framework.TestContext, waypointName string) ambient.Waypoints {
+// deployWaypoint deploys a service-traffic waypoint proxy into the given namespace and waits for
+// it to be ready.
+func deployWaypoint(ctx framework.TestContext, targetNS namespace.Instance, waypointName string) ambient.Waypoints {
 	ctx.Helper()
-	ctx.Logf("Deploying waypoint %q in namespace %s", waypointName, ns.Name())
-	wps, err := ambient.NewWaypointProxyWithTrafficType(ctx, ns, waypointName, constants.ServiceTraffic)
+	ctx.Logf("Deploying waypoint %q in namespace %s", waypointName, targetNS.Name())
+	wps, err := ambient.NewWaypointProxyWithTrafficType(ctx, targetNS, waypointName, constants.ServiceTraffic)
 	if err != nil {
 		ctx.Fatalf("failed to deploy waypoint %q: %v", waypointName, err)
 	}
 	return wps
 }
 
-// migrateNSToAmbient switches the shared namespace from sidecar injection to
+// migrateNSToAmbient switches the given namespace from sidecar injection to
 // ambient dataplane mode (labels only). The caller is responsible for
 // restarting whichever workloads need the change.
-func migrateNSToAmbient(ctx framework.TestContext) {
+func migrateNSToAmbient(ctx framework.TestContext, targetNS namespace.Instance) {
 	ctx.Helper()
 	ctx.Log("Migrating namespace to ambient mode")
-	if err := ns.RemoveLabel("istio-injection"); err != nil {
+	if err := targetNS.RemoveLabel("istio-injection"); err != nil {
 		ctx.Fatalf("failed to remove sidecar injection label: %v", err)
 	}
-	if err := ns.SetLabel(label.IoIstioDataplaneMode.Name, "ambient"); err != nil {
+	if err := targetNS.SetLabel(label.IoIstioDataplaneMode.Name, "ambient"); err != nil {
 		ctx.Fatalf("failed to set ambient dataplane mode: %v", err)
 	}
 }

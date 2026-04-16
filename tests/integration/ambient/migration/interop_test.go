@@ -34,27 +34,27 @@ import (
 // enforced. Traffic from an ambient client in the same namespace does go through the waypoint.
 func TestMixedModeCrossNamespace(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		ctx.Cleanup(func() { resetToSidecarMode(ctx) })
+		env := newTestEnv(ctx, withCrossClient())
 
 		const waypointName = "mixed-mode-wp"
 
 		// Step 1: Migrate ns to ambient with a waypoint; nsSidecar stays sidecar-injected.
 		// Migrate before setting the waypoint so that SetWaypointForNamespace captures
 		// the ambient label in its snapshot; its LIFO cleanup will then preserve it,
-		// allowing resetToSidecarMode to remove it reliably.
-		migrateNSToAmbient(ctx)
-		deployWaypoint(ctx, waypointName)
-		ambient.SetWaypointForNamespace(ctx, ns, waypointName)
+		// allowing namespace cleanup to work reliably.
+		migrateNSToAmbient(ctx, env.ns)
+		deployWaypoint(ctx, env.ns, waypointName)
+		ambient.SetWaypointForNamespace(ctx, env.ns, waypointName)
 
 		// Apply an L7 ALLOW policy on the waypoint so we can detect whether it is enforced.
 		waypointPolicy := fmt.Sprintf(l7AuthzPolicyWaypoint, waypointName)
-		ctx.ConfigIstio().YAML(ns.Name(), waypointPolicy).ApplyOrFail(ctx)
-		restartWorkloads(ctx, server, client)
+		ctx.ConfigIstio().YAML(env.ns.Name(), waypointPolicy).ApplyOrFail(ctx)
+		restartWorkloads(ctx, env.server, env.client)
 
 		ctx.Log("Waiting for ambient client connectivity through waypoint")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := client.Call(echo.CallOptions{
-				To:   server,
+			_, err := env.client.Call(echo.CallOptions{
+				To:   env.server,
 				Port: echo.Port{Name: "http"},
 				HTTP: echo.HTTP{
 					Method: "GET",
@@ -70,8 +70,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 		// succeeds but bypasses the waypoint.
 		ctx.Log("Verifying sidecar crossClient can reach ambient server (bypasses waypoint)")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := crossClient.Call(echo.CallOptions{
-				To:    server,
+			_, err := env.crossClient.Call(echo.CallOptions{
+				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.OK(),
@@ -83,8 +83,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 		// The waypoint ALLOW policy only allows GET /allowed*. A POST should succeed if
 		// the waypoint is bypassed (because ztunnel doesn't enforce L7 rules).
 		ctx.Log("Verifying L7 policy is NOT enforced for sidecar→ambient (waypoint bypassed)")
-		crossClient.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.crossClient.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "POST",
@@ -97,8 +97,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 
 		// Step 4: client (ambient) calls server — verify L7 waypoint policy IS enforced.
 		ctx.Log("Verifying L7 policy IS enforced for ambient→ambient (through waypoint)")
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "GET",
@@ -108,8 +108,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 			Check: check.And(check.OK(), isL7()),
 		})
 		// POST should be denied by the waypoint.
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "POST",
@@ -123,8 +123,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 		// Step 5: Verify mTLS works in both directions.
 		ctx.Log("Verifying mTLS for both traffic paths")
 		// ambient client → server should work (already verified above).
-		client.CallOrFail(ctx, echo.CallOptions{
-			To:   server,
+		env.client.CallOrFail(ctx, echo.CallOptions{
+			To:   env.server,
 			Port: echo.Port{Name: "http"},
 			HTTP: echo.HTTP{
 				Method: "GET",
@@ -134,8 +134,8 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 			Check: check.OK(),
 		})
 		// sidecar crossClient → server should work.
-		crossClient.CallOrFail(ctx, echo.CallOptions{
-			To:    server,
+		env.crossClient.CallOrFail(ctx, echo.CallOptions{
+			To:    env.server,
 			Port:  echo.Port{Name: "http"},
 			Count: 1,
 			Check: check.OK(),
