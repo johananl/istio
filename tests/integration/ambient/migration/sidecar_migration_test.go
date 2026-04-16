@@ -74,7 +74,7 @@ func TestSidecarToAmbientMigration(t *testing.T) {
 					Check: check.OK(),
 				})
 				return err
-			}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+			}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 			ctx.Log("Strict PeerAuthentication active — sidecar mTLS verified")
 
 			runMigrationTest(ctx, 1.0)
@@ -143,7 +143,7 @@ func TestNorthSouthMigration(t *testing.T) {
 				Check:  check.OK(),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 		ctx.Log("Ingress connectivity verified under sidecar mode")
 
 		ctx.NewSubTest("permissive").Run(func(ctx framework.TestContext) {
@@ -167,7 +167,7 @@ func TestNorthSouthMigration(t *testing.T) {
 					Check:  check.OK(),
 				})
 				return err
-			}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+			}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 			ctx.Log("Strict PeerAuthentication active — ingress mTLS verified")
 
 			runNorthSouthMigrationTest(ctx, ingress, 1.0)
@@ -179,7 +179,7 @@ func TestNorthSouthMigration(t *testing.T) {
 // generator measuring disruption.
 func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 	const (
-		preMigrationDuration  = 15 * time.Second
+		preMigrationDuration  = 5 * time.Second
 		postMigrationDuration = 30 * time.Second
 		requestsPerRound      = 5
 		interval              = 500 * time.Millisecond
@@ -254,7 +254,7 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 			Check: check.OK(),
 		})
 		return err
-	}, retry.Timeout(5*time.Minute), retry.Delay(2*time.Second))
+	}, retry.Timeout(5*time.Minute), retry.Delay(time.Second))
 	ctx.Log("Ambient connectivity confirmed")
 
 	ctx.Log("Running stabilization traffic under ambient mode")
@@ -278,7 +278,7 @@ func runMigrationTest(ctx framework.TestContext, minSuccessRate float64) {
 // north-south traffic (ingress gateway → server) measuring disruption.
 func runNorthSouthMigrationTest(ctx framework.TestContext, ingress echo.Caller, minSuccessRate float64) {
 	const (
-		preMigrationDuration  = 15 * time.Second
+		preMigrationDuration  = 5 * time.Second
 		postMigrationDuration = 30 * time.Second
 		requestsPerRound      = 5
 		interval              = 500 * time.Millisecond
@@ -332,7 +332,7 @@ func runNorthSouthMigrationTest(ctx framework.TestContext, ingress echo.Caller, 
 			Check:  check.OK(),
 		})
 		return err
-	}, retry.Timeout(5*time.Minute), retry.Delay(2*time.Second))
+	}, retry.Timeout(5*time.Minute), retry.Delay(time.Second))
 	ctx.Log("Ambient north-south connectivity confirmed")
 
 	ctx.Log("Running stabilization north-south traffic under ambient mode")

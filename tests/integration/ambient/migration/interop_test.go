@@ -64,7 +64,7 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// Step 2: crossClient (sidecar) calls server (ambient + waypoint) — traffic
 		// succeeds but bypasses the waypoint.
@@ -77,7 +77,7 @@ func TestMixedModeCrossNamespace(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Step 3: Verify L7 waypoint policy is NOT enforced for sidecar→ambient traffic.
 		// The waypoint ALLOW policy only allows GET /allowed*. A POST should succeed if

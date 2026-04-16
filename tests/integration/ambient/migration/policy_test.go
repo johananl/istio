@@ -73,7 +73,7 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// POST should be denied.
 		client.CallOrFail(ctx, echo.CallOptions{
@@ -129,7 +129,7 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// Step 7: Verify enforcement via waypoint.
 		ctx.Log("Verifying L7 policy enforcement via waypoint")
@@ -145,7 +145,7 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// POST should still be denied by waypoint.
 		client.CallOrFail(ctx, echo.CallOptions{
@@ -199,7 +199,7 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// crossClient (different namespace, different SA) should be denied.
 		retry.UntilSuccessOrFail(ctx, func() error {
@@ -210,7 +210,7 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 				Check: check.NotOK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("L4 policy enforced under sidecar: client allowed, crossClient denied")
 
 		// Step 3: Migrate namespace to ambient (no waypoint needed for L4).
@@ -229,7 +229,7 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// crossClient should still be denied after migration.
 		retry.UntilSuccessOrFail(ctx, func() error {
@@ -240,7 +240,7 @@ func TestL4AuthorizationPolicySurvivesMigration(t *testing.T) {
 				Check: check.NotOK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("L4 policy survives migration: client allowed, crossClient denied by ztunnel")
 	})
 }
@@ -300,7 +300,7 @@ func TestWaypointBypassPrevention(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// Step 2: Apply ALLOW policy permitting only the waypoint SA.
 		policy := fmt.Sprintf(allowOnlyWaypointPolicy, ns.Name(), waypointName)
@@ -319,7 +319,7 @@ func TestWaypointBypassPrevention(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("Ambient client allowed (traffic through waypoint)")
 
 		// Step 4: crossClient (sidecar, different namespace) calls server — denied
@@ -334,7 +334,7 @@ func TestWaypointBypassPrevention(t *testing.T) {
 				Check: check.NotOK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("Sidecar crossClient denied — waypoint bypass prevention works")
 	})
 }

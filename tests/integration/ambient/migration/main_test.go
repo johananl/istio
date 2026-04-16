@@ -233,7 +233,7 @@ func resetToSidecarMode(ctx framework.TestContext) {
 			Check: check.OK(),
 		})
 		return err
-	}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+	}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 	ctx.Log("Namespace reset to sidecar mode")
 }
 

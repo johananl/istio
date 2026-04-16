@@ -130,7 +130,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, "v1"))),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Header "end-user: jason" → server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
@@ -144,7 +144,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 				Check: check.And(check.OK(), check.Hostname(serverPodByVersion(ctx, "v2"))),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("Header-based routing works under sidecar mode")
 
 		// Step 3: Deploy waypoint; create HTTPRoute with parentRefs to Service.
@@ -172,7 +172,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 				Check: check.And(check.OK(), isL7()),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 
 		// Step 6: Verify header-based routing works through the waypoint.
 		ctx.Log("Verifying header-based routing through waypoint")
@@ -186,7 +186,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 				Check: check.And(check.OK(), isL7(), check.Hostname(serverV1.WorkloadsOrFail(ctx)[0].PodName())),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Header "end-user: jason" → server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
@@ -200,7 +200,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 				Check: check.And(check.OK(), isL7(), check.Hostname(serverV2.WorkloadsOrFail(ctx)[0].PodName())),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("Header-based routing works through waypoint — HTTPRoute migration successful")
 	})
 }

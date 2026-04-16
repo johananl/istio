@@ -47,7 +47,7 @@ func TestRollbackFromAmbient(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 		ctx.Log("Ambient connectivity confirmed")
 
 		// Apply an L4 policy to verify it survives the rollback.
@@ -63,7 +63,7 @@ func TestRollbackFromAmbient(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Step 3: Re-add istio-injection=enabled, remove dataplane-mode=ambient.
 		ctx.Log("Rolling back to sidecar mode")
@@ -87,7 +87,7 @@ func TestRollbackFromAmbient(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 		ctx.Log("Sidecar connectivity restored after rollback")
 
 		// Step 6: Verify L4 policy is still enforced post-rollback.
@@ -100,7 +100,7 @@ func TestRollbackFromAmbient(t *testing.T) {
 				Check: check.NotOK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("L4 policy still enforced after rollback — crossClient denied")
 	})
 }
@@ -142,7 +142,7 @@ func TestWrongOrderingDisruption(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
 		// Step 1: Disable sidecar injection WITHOUT enabling ambient first.
 		ctx.Log("Disabling sidecar injection without enabling ambient")
@@ -166,7 +166,7 @@ func TestWrongOrderingDisruption(t *testing.T) {
 				Check: check.NotOK(),
 			})
 			return err
-		}, retry.Timeout(30*time.Second), retry.Delay(2*time.Second))
+		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 		ctx.Log("Traffic disrupted as expected — server has neither sidecar nor ztunnel capture")
 
 		// Step 4: Clean up — remove DestinationRule, re-enable sidecar injection + restart.
@@ -186,7 +186,7 @@ func TestWrongOrderingDisruption(t *testing.T) {
 				Check: check.OK(),
 			})
 			return err
-		}, retry.Timeout(2*time.Minute), retry.Delay(2*time.Second))
+		}, retry.Timeout(2*time.Minute), retry.Delay(time.Second))
 		ctx.Log("Connectivity restored after cleanup")
 	})
 }
