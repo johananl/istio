@@ -222,7 +222,7 @@ func resetToSidecarMode(ctx framework.TestContext) {
 	}
 
 	ctx.Log("Restarting workloads to re-inject sidecars")
-	restartWorkloadsConcurrent(ctx, server, serverV1, serverV2, client)
+	restartWorkloads(ctx, server, serverV1, serverV2, client)
 
 	// Verify sidecars are back.
 	retry.UntilSuccessOrFail(ctx, func() error {
@@ -277,22 +277,9 @@ func migrateNSToAmbient(ctx framework.TestContext) {
 	}
 }
 
-// restartWorkloads restarts the given echo instances sequentially and waits for
-// each to come back.
+// restartWorkloads restarts the given echo instances concurrently and
+// waits for all of them to come back.
 func restartWorkloads(ctx framework.TestContext, instances ...echo.Instance) {
-	ctx.Helper()
-	for _, inst := range instances {
-		ctx.Logf("Restarting %s", inst.Config().Service)
-		if err := inst.Restart(); err != nil {
-			ctx.Fatalf("failed to restart %s: %v", inst.Config().Service, err)
-		}
-	}
-}
-
-// restartWorkloadsConcurrent restarts the given echo instances concurrently and
-// waits for all of them to come back. This is significantly faster than
-// restartWorkloads when multiple independent instances need to be restarted.
-func restartWorkloadsConcurrent(ctx framework.TestContext, instances ...echo.Instance) {
 	ctx.Helper()
 	var wg sync.WaitGroup
 	var mu sync.Mutex
