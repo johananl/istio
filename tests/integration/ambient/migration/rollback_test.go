@@ -33,7 +33,7 @@ import (
 // removing the ambient label, and restarting pods.
 func TestRollbackFromAmbient(t *testing.T) {
 	framework.NewTest(t).Run(func(ctx framework.TestContext) {
-		env := newTestEnv(ctx, withCrossClient())
+		env := newTestEnv(ctx, withSidecarClient())
 
 		// Step 1: Migrate namespace fully to ambient (labels + restart, no waypoint).
 		migrateNSToAmbient(ctx, env.ns)
@@ -95,15 +95,16 @@ func TestRollbackFromAmbient(t *testing.T) {
 		// Step 6: Verify L4 policy is still enforced post-rollback.
 		ctx.Log("Verifying L4 policy still enforced after rollback")
 		retry.UntilSuccessOrFail(ctx, func() error {
-			_, err := env.crossClient.Call(echo.CallOptions{
+			_, err := env.sidecarClient.Call(echo.CallOptions{
 				To:    env.server,
 				Port:  echo.Port{Name: "http"},
 				Count: 1,
 				Check: check.NotOK(),
+				Retry: echo.Retry{NoRetry: true},
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
-		ctx.Log("L4 policy still enforced after rollback — crossClient denied")
+		ctx.Log("L4 policy still enforced after rollback — sidecar client denied")
 	})
 }
 
@@ -168,6 +169,7 @@ func TestWrongOrderingDisruption(t *testing.T) {
 				Port:  echo.Port{Name: "http"},
 				Count: 3,
 				Check: check.NotOK(),
+				Retry: echo.Retry{NoRetry: true},
 			})
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))

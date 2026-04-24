@@ -44,26 +44,26 @@ var ist istio.Instance
 // testEnv holds per-test isolated namespaces and echo deployments, preventing cross-test
 // interference and enabling parallel execution.
 type testEnv struct {
-	ns          namespace.Instance
-	nsSidecar   namespace.Instance // Nil unless WithCrossClient is passed to newTestEnv
-	client      echo.Instance
-	server      echo.Instance
-	serverV1    echo.Instance // Nil unless WithVersionedServers is passed to newTestEnv
-	serverV2    echo.Instance // Nil unless WithVersionedServers is passed to newTestEnv
-	crossClient echo.Instance // Nil unless WithCrossClient is passed to newTestEnv
+	ns            namespace.Instance
+	nsSidecar     namespace.Instance // Nil unless withSidecarClient is passed to newTestEnv.
+	client        echo.Instance
+	server        echo.Instance
+	serverV1      echo.Instance // Nil unless withVersionedServers is passed to newTestEnv.
+	serverV2      echo.Instance // Nil unless withVersionedServers is passed to newTestEnv.
+	sidecarClient echo.Instance // Nil unless withSidecarClient is passed to newTestEnv.
 }
 
 // testEnvOption configures optional deployments in newTestEnv.
 type testEnvOption func(*testEnvConfig)
 
 type testEnvConfig struct {
-	crossClient     bool
+	sidecarClient   bool
 	versionedServer bool
 }
 
-// withCrossClient deploys a sidecar-injected client in a separate namespace.
-func withCrossClient() testEnvOption {
-	return func(c *testEnvConfig) { c.crossClient = true }
+// withSidecarClient deploys a sidecar-injected client in a separate namespace.
+func withSidecarClient() testEnvOption {
+	return func(c *testEnvConfig) { c.sidecarClient = true }
 }
 
 // withVersionedServers deploys server-v1 and server-v2 single-subset echo instances.
@@ -90,27 +90,31 @@ func newTestEnv(ctx framework.TestContext, opts ...testEnvOption) *testEnv {
 		ctx.Fatal(err)
 	}
 
+	serverCfg := echo.Config{
+		Service:   "server",
+		Namespace: env.ns,
+		Ports: []echo.Port{
+			{
+				Name:         "http",
+				Protocol:     protocol.HTTP,
+				WorkloadPort: 8090,
+			},
+		},
+	}
+	if cfg.versionedServer {
+		serverCfg.Subsets = []echo.SubsetConfig{
+			{Version: "v1"},
+			{Version: "v2"},
+		}
+	}
+
 	builder := deployment.New(ctx).
 		With(&env.client, echo.Config{
 			Service:   "client",
 			Namespace: env.ns,
 			Ports:     []echo.Port{},
 		}).
-		With(&env.server, echo.Config{
-			Service:   "server",
-			Namespace: env.ns,
-			Ports: []echo.Port{
-				{
-					Name:         "http",
-					Protocol:     protocol.HTTP,
-					WorkloadPort: 8090,
-				},
-			},
-			Subsets: []echo.SubsetConfig{
-				{Version: "v1"},
-				{Version: "v2"},
-			},
-		})
+		With(&env.server, serverCfg)
 
 	if cfg.versionedServer {
 		builder = builder.
@@ -156,16 +160,16 @@ func newTestEnv(ctx framework.TestContext, opts ...testEnvOption) *testEnv {
 			})
 	}
 
-	if cfg.crossClient {
+	if cfg.sidecarClient {
 		env.nsSidecar, err = namespace.New(ctx, namespace.Config{
-			Prefix: "sidecar-cross",
+			Prefix: "sidecar-client",
 			Inject: true,
 		})
 		if err != nil {
 			ctx.Fatal(err)
 		}
-		builder = builder.With(&env.crossClient, echo.Config{
-			Service:   "cross-client",
+		builder = builder.With(&env.sidecarClient, echo.Config{
+			Service:   "sidecar-client",
 			Namespace: env.nsSidecar,
 			Ports:     []echo.Port{},
 		})
@@ -206,9 +210,9 @@ func TestMain(m *testing.M) {
 }
 
 const (
-	// l7AuthzPolicyWaypoint is the equivalent L7 policy using targetRefs to
-	// attach to a waypoint Gateway, as required after migration to ambient.
-	// The %s placeholder is replaced with the waypoint Gateway name.
+	// l7AuthzPolicyWaypoint is the equivalent L7 policy using targetRefs to attach to a waypoint
+	// Gateway, as required after migration to ambient. The %s placeholder is replaced with the
+	// waypoint Gateway name.
 	l7AuthzPolicyWaypoint = `
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -227,9 +231,9 @@ spec:
         paths: ["/allowed*"]
 `
 
-	// l4AuthzPolicy is an L4 AuthorizationPolicy using a selector. Only the
-	// specified service account principal is allowed. The first %s is the
-	// namespace and the second %s is the service account name.
+	// l4AuthzPolicy is an L4 AuthorizationPolicy using a selector. Only the specified service
+	// account principal is allowed. The first %s is the namespace and the second %s is the service
+	// account name.
 	l4AuthzPolicy = `
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -247,8 +251,8 @@ spec:
 `
 )
 
-// serverPodByVersion returns the pod name of the server workload matching the given version
-// (e.g. "v1" or "v2"). It searches the given server echo instance's workloads.
+// serverPodByVersion returns the pod name of the server workload matching the given version (e.g.
+// "v1" or "v2"). It searches the given server echo instance's workloads.
 func serverPodByVersion(ctx framework.TestContext, srv echo.Instance, version string) string {
 	prefix := "server-" + version + "-"
 	for _, w := range srv.WorkloadsOrFail(ctx) {
@@ -272,9 +276,8 @@ func deployWaypoint(ctx framework.TestContext, targetNS namespace.Instance, wayp
 	return wps
 }
 
-// migrateNSToAmbient switches the given namespace from sidecar injection to
-// ambient dataplane mode (labels only). The caller is responsible for
-// restarting whichever workloads need the change.
+// migrateNSToAmbient switches the given namespace from sidecar injection to ambient dataplane mode
+// (labels only). The caller is responsible for restarting whichever workloads need the change.
 func migrateNSToAmbient(ctx framework.TestContext, targetNS namespace.Instance) {
 	ctx.Helper()
 	ctx.Log("Migrating namespace to ambient mode")
@@ -286,8 +289,8 @@ func migrateNSToAmbient(ctx framework.TestContext, targetNS namespace.Instance) 
 	}
 }
 
-// restartWorkloads restarts the given echo instances concurrently and
-// waits for all of them to come back.
+// restartWorkloads restarts the given echo instances concurrently and waits for all of them to
+// come back.
 func restartWorkloads(ctx framework.TestContext, instances ...echo.Instance) {
 	ctx.Helper()
 	var wg sync.WaitGroup
@@ -310,8 +313,8 @@ func restartWorkloads(ctx framework.TestContext, instances ...echo.Instance) {
 	}
 }
 
-// isL7 returns a checker that verifies responses were processed by an L7
-// proxy (waypoint) by looking for the X-Request-Id header.
+// isL7 returns a checker that verifies responses were processed by an L7 proxy (waypoint) by
+// looking for the X-Request-Id header.
 func isL7() echo.Checker {
 	return check.Each(func(r echoClient.Response) error {
 		if _, ok := r.RequestHeaders[http.CanonicalHeaderKey("X-Request-Id")]; !ok {

@@ -101,7 +101,7 @@ spec:
 `
 )
 
-// TestHTTPRouteThroughWaypoint validates the VirtualService → HTTPRoute migration path.
+// TestHTTPRouteThroughWaypoint validates the VirtualService -> HTTPRoute migration path.
 // It starts with sidecar-mode header-based routing via VirtualService + DestinationRule,
 // then migrates to ambient mode with an equivalent HTTPRoute attached to a waypoint.
 func TestHTTPRouteThroughWaypoint(t *testing.T) {
@@ -113,7 +113,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 		httpPort := env.server.Config().Ports.MustForName("http")
 
 		// Step 1: Apply VirtualService + DestinationRule for header-based routing.
-		// Requests with "end-user: jason" → server-v2, default → server-v1.
+		// Requests with "end-user: jason" -> server-v2, default -> server-v1.
 		vsCfg := fmt.Sprintf(headerRoutingVS, env.ns.Name(), env.ns.Name(), env.ns.Name(), env.ns.Name())
 		ctx.Log("Applying VirtualService + DestinationRule for header-based routing")
 		ctx.ConfigIstio().YAML(env.ns.Name(), vsCfg).ApplyOrFail(ctx)
@@ -121,7 +121,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 		// Step 2: Verify header-based routing works under sidecar mode.
 		ctx.Log("Verifying header-based routing under sidecar mode")
 
-		// Default traffic → server-v1.
+		// Default traffic -> server-v1.
 		retry.UntilSuccessOrFail(ctx, func() error {
 			_, err := env.client.Call(echo.CallOptions{
 				To:    env.server,
@@ -132,7 +132,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
-		// Header "end-user: jason" → server-v2.
+		// Header "end-user: jason" -> server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
 			_, err := env.client.Call(echo.CallOptions{
 				To:   env.server,
@@ -177,7 +177,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 		// Step 6: Verify header-based routing works through the waypoint.
 		ctx.Log("Verifying header-based routing through waypoint")
 
-		// Default traffic → server-v1.
+		// Default traffic -> server-v1.
 		retry.UntilSuccessOrFail(ctx, func() error {
 			_, err := env.client.Call(echo.CallOptions{
 				To:    env.server,
@@ -188,7 +188,7 @@ func TestHTTPRouteThroughWaypoint(t *testing.T) {
 			return err
 		}, retry.Timeout(30*time.Second), retry.Delay(time.Second))
 
-		// Header "end-user: jason" → server-v2.
+		// Header "end-user: jason" -> server-v2.
 		retry.UntilSuccessOrFail(ctx, func() error {
 			_, err := env.client.Call(echo.CallOptions{
 				To:   env.server,
