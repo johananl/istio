@@ -220,9 +220,9 @@ metadata:
   name: l7-allow-get-waypoint
 spec:
   targetRefs:
-  - kind: Gateway
-    group: gateway.networking.k8s.io
-    name: %s
+  - kind: Service
+    group: core
+    name: server
   action: ALLOW
   rules:
   - to:

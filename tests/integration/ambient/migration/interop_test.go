@@ -17,7 +17,6 @@
 package migration
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -47,8 +46,7 @@ func TestSidecarToAmbientBypassesWaypoint(t *testing.T) {
 
 		// Apply an L7 ALLOW policy on the waypoint so we can detect whether traffic goes through
 		// the waypoint.
-		policy := fmt.Sprintf(l7AuthzPolicyWaypoint, waypointName)
-		ctx.ConfigIstio().YAML(env.ns.Name(), policy).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), l7AuthzPolicyWaypoint).ApplyOrFail(ctx)
 		restartWorkloads(ctx, env.server, env.client)
 
 		ctx.Log("Waiting for ambient client connectivity (through waypoint)")

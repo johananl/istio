@@ -28,8 +28,8 @@ import (
 	"istio.io/istio/pkg/test/util/retry"
 )
 
-// l7AuthzPolicySidecar is an L7 AuthorizationPolicy using a workload selector, as would be used in
-// sidecar mode. It allows only GET on /allowed.
+// l7AuthzPolicySidecar is an L7 AuthorizationPolicy targeting the server service via targetRefs,
+// as would be used in sidecar mode. It allows only GET on /allowed.
 const l7AuthzPolicySidecar = `
 apiVersion: security.istio.io/v1
 kind: AuthorizationPolicy
@@ -87,8 +87,7 @@ func TestL7AuthorizationPolicyMigration(t *testing.T) {
 
 		ctx.Log("Deploying waypoint and applying targetRefs-based L7 policy")
 		deployWaypoint(ctx, env.ns, waypointName)
-		waypointPolicy := fmt.Sprintf(l7AuthzPolicyWaypoint, waypointName)
-		ctx.ConfigIstio().YAML(env.ns.Name(), waypointPolicy).ApplyOrFail(ctx)
+		ctx.ConfigIstio().YAML(env.ns.Name(), l7AuthzPolicyWaypoint).ApplyOrFail(ctx)
 		ctx.Log("Checking enforcement after deploying waypoint and applying new policy")
 		checkL7Enforcement(ctx, env.client, env.server)
 
