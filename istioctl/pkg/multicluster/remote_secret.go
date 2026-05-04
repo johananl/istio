@@ -116,11 +116,11 @@ func NewCreateRemoteSecretCommand(ctx cli.Context) *cobra.Command {
 			}
 			out, warn, err := CreateRemoteSecret(client, opts)
 			if err != nil {
-				_, _ = fmt.Fprintf(c.OutOrStderr(), "error: %v\n", err)
+				_, _ = fmt.Fprintf(c.ErrOrStderr(), "error: %v\n", err)
 				return err
 			}
 			if warn != nil {
-				_, _ = fmt.Fprintf(c.OutOrStderr(), "warn: %v\n", warn)
+				_, _ = fmt.Fprintf(c.ErrOrStderr(), "warn: %v\n", warn)
 			}
 			_, _ = fmt.Fprint(c.OutOrStdout(), out)
 			return nil
