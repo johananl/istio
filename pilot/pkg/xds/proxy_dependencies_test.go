@@ -819,3 +819,37 @@ func TestWaypointNeedsPush(t *testing.T) {
 		assert.Equal(t, waypointNeedsPush(addressUpdate(), waypoint), true)
 	})
 }
+
+// TestSidecarWaypointPushes ensures that sidecar proxies correctly receive xDS pushes for waypoint
+// updates based on the feature flag and attachment.
+func TestSidecarWaypointPushes(t *testing.T) {
+	sidecar := &model.Proxy{Type: model.SidecarProxy}
+	addressUpdate := &model.PushRequest{
+		ConfigsUpdated: sets.New(model.ConfigKey{Kind: kind.Address}),
+		WaypointsUpdated: sets.New(model.WaypointReference{
+			Namespace: "default",
+			Hostname:  "waypoint.default.svc.cluster.local",
+		}),
+	}
+	unrelatedAddressUpdate := &model.PushRequest{
+		ConfigsUpdated: sets.New(model.ConfigKey{Kind: kind.Address}),
+	}
+	endpointUpdate := &model.PushRequest{
+		ConfigsUpdated: sets.New(model.ConfigKey{Kind: kind.Endpoints}),
+	}
+
+	test.SetForTest(t, &features.EnableSidecarWaypointRouting, true)
+	assert.Equal(t, waypointNeedsPush(addressUpdate, sidecar), true)
+	assert.Equal(t, edsNeedsPush(addressUpdate, sidecar), true)
+	assert.Equal(t, ldsNeedsPush(sidecar, addressUpdate), true)
+	assert.Equal(t, canSendPartialFullPushes(endpointUpdate, sidecar), false)
+	assert.Equal(t, waypointNeedsPush(unrelatedAddressUpdate, sidecar), false)
+	assert.Equal(t, edsNeedsPush(unrelatedAddressUpdate, sidecar), false)
+	assert.Equal(t, ldsNeedsPush(sidecar, unrelatedAddressUpdate), false)
+
+	test.SetForTest(t, &features.EnableSidecarWaypointRouting, false)
+	assert.Equal(t, waypointNeedsPush(addressUpdate, sidecar), false)
+	assert.Equal(t, edsNeedsPush(addressUpdate, sidecar), false)
+	assert.Equal(t, ldsNeedsPush(sidecar, addressUpdate), false)
+	assert.Equal(t, canSendPartialFullPushes(endpointUpdate, sidecar), true)
+}
