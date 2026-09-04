@@ -17,6 +17,7 @@ package uds
 import (
 	"context"
 	"net"
+	"path/filepath"
 	"testing"
 
 	"google.golang.org/grpc"
@@ -24,12 +25,13 @@ import (
 )
 
 func TestUdsListener(t *testing.T) {
-	l, err := NewListener("./etc/istio/proxy/test")
+	socket := filepath.Join(t.TempDir(), "test")
+	l, err := NewListener(socket)
 	if err != nil {
 		t.Fatalf("unexpected error %v", err)
 	}
 	defer l.Close()
-	conn, err := connect("./etc/istio/proxy/test")
+	conn, err := connect(socket)
 	if err != nil {
 		t.Fatalf("failed to connect %v", err)
 	}
