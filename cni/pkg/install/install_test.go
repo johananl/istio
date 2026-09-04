@@ -275,17 +275,25 @@ func TestSleepCheckInstall(t *testing.T) {
 			errChan := make(chan error, 1)
 			runAndWaitForReady := func() {
 				t.Helper()
-				go func() {
-					errChan <- in.sleepWatchInstall(ctx, sets.String{})
-				}()
+				startWatch := func() {
+					go func() {
+						errChan <- in.sleepWatchInstall(ctx, sets.String{})
+					}()
+				}
+				startWatch()
 
 				retry.UntilOrFail(t, func() bool {
 					select {
 					case err := <-errChan:
-						if err == nil {
-							t.Fatal("invalid configuration detected")
+						if err != nil {
+							t.Fatal(err)
 						}
-						t.Fatal(err)
+						if err := checkValidCNIConfig(ctx, cfg, cniConfigFilepath); err != nil {
+							t.Fatalf("invalid configuration detected: %v", err)
+						}
+						// The configuration is valid. Treat the nil result as an early file event
+						// and restart the watcher while waiting for readiness.
+						startWatch()
 					default:
 					}
 					return isReady.Load().(bool)
