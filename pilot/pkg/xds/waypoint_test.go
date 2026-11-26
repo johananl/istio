@@ -301,19 +301,45 @@ func TestWaypointEndpoints(t *testing.T) {
 	})
 }
 
+// Verify that backend labels allow cluster provisioning independently of attachment, without
+// creating service filter chains or HTTP routes.
 func TestWaypointBackendClusterRetention(t *testing.T) {
 	testCases := []struct {
-		enabled  bool
-		enrolled bool
+		enabled      bool
+		enrolled     bool
+		backendLabel string
 	}{
-		{enabled: true, enrolled: true},
-		{enabled: true, enrolled: false},
-		{enabled: false, enrolled: true},
-		{enabled: false, enrolled: false},
+		{enabled: true, enrolled: true, backendLabel: "waypoint"},
+		{enabled: true, enrolled: true, backendLabel: ""},
+		{enabled: true, enrolled: false, backendLabel: "waypoint"},
+		{enabled: true, enrolled: false, backendLabel: ""},
+		{enabled: false, enrolled: true, backendLabel: "waypoint"},
+		{enabled: false, enrolled: true, backendLabel: ""},
+		{enabled: false, enrolled: false, backendLabel: "waypoint"},
+		{enabled: false, enrolled: false, backendLabel: ""},
+		{enabled: true, enrolled: true, backendLabel: "other-waypoint"},
+		{enabled: true, enrolled: false, backendLabel: "other-waypoint"},
 	}
 
+	otherGateway := `apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: other-waypoint
+  namespace: default
+spec:
+  gatewayClassName: waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+status:
+  addresses:
+  - type: Hostname
+    value: other-waypoint.default.svc.cluster.local
+`
+
 	for _, tc := range testCases {
-		t.Run(fmt.Sprintf("enabled=%t/enrolled=%t", tc.enabled, tc.enrolled), func(t *testing.T) {
+		t.Run(fmt.Sprintf("enabled=%t/enrolled=%t/backendLabel=%q", tc.enabled, tc.enrolled, tc.backendLabel), func(t *testing.T) {
 			test.SetForTest(t, &features.EnableSidecarWaypointRouting, tc.enabled)
 
 			serviceEntry := appServiceEntry
@@ -326,12 +352,33 @@ func TestWaypointBackendClusterRetention(t *testing.T) {
 				)
 			}
 
-			d, proxy := setupWaypointTest(t, waypointGateway, waypointSvc,
+			if tc.backendLabel != "" {
+				serviceEntry = strings.Replace(
+					serviceEntry,
+					"  labels:\n",
+					"  labels:\n    istio.io/waypoint-backend: "+tc.backendLabel+"\n",
+					1,
+				)
+			}
+
+			d, proxy := setupWaypointTest(t, waypointGateway, otherGateway, waypointSvc,
 				waypointInstance, serviceEntry, appWorkloadEntry)
+
+			if tc.enabled && tc.backendLabel != "" {
+				info := d.AmbientIndex.ServiceInfo("default/app.com")
+				if info == nil {
+					t.Fatal("app ServiceEntry missing from ambient index")
+				}
+				assert.Equal(t, info.WaypointBackend.Name, tc.backendLabel)
+				assert.Equal(t, info.WaypointBackend.Namespace, "default")
+			}
 
 			const clusterName = "inbound-vip|80|http|app.com"
 			clusters := xdstest.ExtractClusters(d.Clusters(proxy))
-			assert.Equal(t, clusters[clusterName] != nil, tc.enabled || tc.enrolled)
+			// Enrolled services should always return a cluster. Unenrolled services should return
+			// a cluster only when sidecar waypoint routing is enabled and the backend label
+			// selects this waypoint.
+			assert.Equal(t, clusters[clusterName] != nil, tc.enrolled || (tc.enabled && tc.backendLabel == "waypoint"))
 
 			internal := xdstest.ExtractListener("main_internal", d.Listeners(proxy))
 			if internal == nil {
@@ -339,15 +386,36 @@ func TestWaypointBackendClusterRetention(t *testing.T) {
 			}
 			chain := xdstest.ExtractFilterChain(clusterName, internal)
 			assert.Equal(t, chain != nil, tc.enrolled)
+
+			hasServiceRoute := false
+			for _, fc := range internal.FilterChains {
+				manager := xdstest.ExtractHTTPConnectionManager(t, fc)
+				if manager == nil {
+					continue
+				}
+				for _, vh := range manager.GetRouteConfig().GetVirtualHosts() {
+					for _, route := range vh.Routes {
+						if route.GetRoute().GetCluster() == clusterName {
+							hasServiceRoute = true
+						}
+					}
+				}
+			}
+			assert.Equal(t, hasServiceRoute, tc.enrolled)
 		})
 	}
 }
 
+// Verify that retained waypoint clusters receive fresh endpoints after service detachment without
+// reconnecting the proxy.
 func TestWaypointRetainedClusterEndpointUpdates(t *testing.T) {
 	test.SetForTest(t, &features.EnableSidecarWaypointRouting, true)
 
 	d, proxy := setupWaypointTest(t, waypointGateway, waypointSvc, waypointInstance,
 		appServiceEntry, appWorkloadEntry)
+	// Send the gateway.networking.k8s.io/gateway-name label in xDS node metadata so Istiod can
+	// match the waypoint-backend target to this waypoint.
+	proxy.Metadata.Labels = proxy.Labels
 	ads := d.Connect(proxy, nil, []string{v3.EndpointType})
 	const clusterName = "inbound-vip|80|http|app.com"
 
@@ -368,6 +436,40 @@ func TestWaypointRetainedClusterEndpointUpdates(t *testing.T) {
 
 	assertEndpoints("connect_originate;1.1.1.1:80")
 
+	services := clienttest.NewDirectClient[
+		*networkingclient.ServiceEntry,
+		*networkingclient.ServiceEntry,
+		*networkingclient.ServiceEntryList,
+	](t, d.KubeClient())
+
+	storedForBackend := d.Store().Get(gvk.ServiceEntry, "app", "default")
+	if storedForBackend == nil {
+		t.Fatal("app ServiceEntry missing")
+	}
+	updatedForBackend := storedForBackend.DeepCopy()
+	updatedForBackend.Labels[label.IoIstioWaypointBackend.Name] = "waypoint"
+	if _, err := d.Store().Update(updatedForBackend); err != nil {
+		t.Fatalf("setting waypoint-backend label on ServiceEntry default/app: %v", err)
+	}
+
+	svcForBackend := services.Get("app", "default")
+	if svcForBackend == nil {
+		t.Fatal("app ServiceEntry missing from k8s API")
+	}
+	svcForBackend.Labels[label.IoIstioWaypointBackend.Name] = "waypoint"
+	services.Update(svcForBackend)
+
+	retry.UntilSuccessOrFail(t, func() error {
+		info := d.AmbientIndex.ServiceInfo("default/app.com")
+		if info == nil ||
+			info.WaypointBackend.Name != "waypoint" ||
+			info.WaypointBackend.Namespace != "default" {
+			return fmt.Errorf("app.com backend waypoint selection not reconciled")
+		}
+
+		return nil
+	})
+
 	// Remove enrollment from the Istio config store and fake k8s API, keeping service discovery
 	// and the ambient index consistent.
 	storedSvc := d.Store().Get(gvk.ServiceEntry, "app", "default")
@@ -377,14 +479,8 @@ func TestWaypointRetainedClusterEndpointUpdates(t *testing.T) {
 	updatedSvc := storedSvc.DeepCopy()
 	delete(updatedSvc.Labels, label.IoIstioUseWaypoint.Name)
 	if _, err := d.Store().Update(updatedSvc); err != nil {
-		t.Fatalf("unenroll app ServiceEntry: %v", err)
+		t.Fatalf("unenrolling app ServiceEntry: %v", err)
 	}
-
-	services := clienttest.NewDirectClient[
-		*networkingclient.ServiceEntry,
-		*networkingclient.ServiceEntry,
-		*networkingclient.ServiceEntryList,
-	](t, d.KubeClient())
 
 	svc := services.Get("app", "default")
 	if svc == nil {
@@ -412,7 +508,7 @@ func TestWaypointRetainedClusterEndpointUpdates(t *testing.T) {
 	updatedWorkload := storedWorkload.DeepCopy()
 	updatedWorkload.Spec.(*networking.WorkloadEntry).Address = "1.1.1.2"
 	if _, err := d.Store().Update(updatedWorkload); err != nil {
-		t.Fatalf("update app-a workload address: %v", err)
+		t.Fatalf("updating app-a workload address: %v", err)
 	}
 
 	workloads := clienttest.NewDirectClient[

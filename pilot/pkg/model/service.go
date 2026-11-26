@@ -1285,6 +1285,9 @@ type ServiceInfo struct {
 	// Scope of the service - either local or global based on namespace or service label matching
 	Scope    ServiceScope
 	Waypoint WaypointBindingStatus
+	// WaypointBackend identifies a waypoint selected to receive this service's backend clusters
+	// and endpoints, independently of attachment. The zero value means no waypoint is selected.
+	WaypointBackend types.NamespacedName
 	// MarshaledAddress contains the pre-marshaled representation.
 	// Note: this is an Address -- not a Service.
 	MarshaledAddress *anypb.Any
@@ -1517,6 +1520,7 @@ func (i *ServiceInfo) Equals(other *ServiceInfo) bool {
 		i.DNSConnectStrategy == other.DNSConnectStrategy &&
 		i.Scope == other.Scope &&
 		i.Waypoint.Equals(other.Waypoint) &&
+		i.WaypointBackend == other.WaypointBackend &&
 		i.VisibilityConfigured == other.VisibilityConfigured
 }
 

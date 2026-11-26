@@ -452,6 +452,7 @@ func (a *index) buildGlobalCollections(
 				LabelSelector:      svc.LabelSelector,
 				Source:             svc.Source,
 				Waypoint:           svc.Waypoint,
+				WaypointBackend:    svc.WaypointBackend,
 				Scope:              svc.Scope,
 				CreationTime:       svc.CreationTime,
 				DNSConnectStrategy: svc.DNSConnectStrategy,

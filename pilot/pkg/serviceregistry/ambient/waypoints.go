@@ -29,6 +29,7 @@ import (
 
 	"istio.io/api/annotation"
 	"istio.io/api/label"
+	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/cluster"
 	"istio.io/istio/pkg/config/constants"
@@ -176,6 +177,42 @@ func fetchWaypointForService(ctx krt.HandlerContext, Waypoints krt.Collection[Wa
 	return w, nil
 }
 
+// fetchWaypointFromBackendLabels fetches the waypoint selected by the backend labels specified on
+// the resource.
+func fetchWaypointFromBackendLabels(
+	ctx krt.HandlerContext,
+	waypoints krt.Collection[Waypoint],
+	namespaces krt.Collection[*v1.Namespace],
+	serviceEntryVisibility krt.Singleton[model.ServiceEntryVisibilityMatcher],
+	o metav1.ObjectMeta,
+) (*Waypoint, *model.StatusMessage) {
+	if !features.EnableSidecarWaypointRouting {
+		return nil, nil
+	}
+
+	name, found := o.Labels[label.IoIstioWaypointBackend.Name]
+	if !found {
+		return nil, nil
+	}
+
+	// Waypoint and east-west gateway services are ineligible for waypoint attachment, therefore
+	// they are excluded from backend provisioning, too.
+	if o.Labels[label.GatewayManaged.Name] == constants.ManagedGatewayMeshControllerLabel ||
+		o.Labels[label.GatewayManaged.Name] == constants.ManagedGatewayEastWestControllerLabel {
+		return nil, nil
+	}
+
+	named := &krt.Named{
+		Name:      name,
+		Namespace: o.Namespace,
+	}
+	if ns, found := o.Labels[label.IoIstioWaypointBackendNamespace.Name]; found {
+		named.Namespace = ns
+	}
+
+	return resolveServiceWaypoint(ctx, waypoints, namespaces, serviceEntryVisibility, o.Namespace, named)
+}
+
 // crossNamespaceWaypointForbidden refuses a cross-namespace waypoint (primary or canary) for a
 // NAMESPACE-visibility ServiceEntry. ServiceEntryVisibility is nil for consumers it doesn't govern
 // (e.g. Kubernetes Services).
@@ -301,9 +338,8 @@ func ResolveUseWaypointCanary(
 	return named, weight, valid
 }
 
-// resolveCanaryWaypoint applies the primary waypoint attachment, traffic-type and
-// ServiceEntry-visibility checks.
-func resolveCanaryWaypoint(
+// resolveServiceWaypoint resolves a named waypoint and checks service attachment eligibility.
+func resolveServiceWaypoint(
 	ctx krt.HandlerContext,
 	waypoints krt.Collection[Waypoint],
 	namespaces krt.Collection[*v1.Namespace],
@@ -353,7 +389,7 @@ func buildWeightedWaypoints(
 		status.Error = ReportWaypointCanaryInvalidWeight(named.ResourceName())
 		return nil
 	}
-	canary, cerr := resolveCanaryWaypoint(ctx, waypoints, namespaces, serviceEntryVisibility, o.Namespace, named)
+	canary, cerr := resolveServiceWaypoint(ctx, waypoints, namespaces, serviceEntryVisibility, o.Namespace, named)
 	if cerr != nil {
 		status.Error = cerr
 		return nil

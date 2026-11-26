@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
@@ -31,6 +32,7 @@ import (
 	meshConfig "istio.io/api/mesh/v1alpha1"
 	networking "istio.io/api/networking/v1alpha3"
 	networkingclient "istio.io/client-go/pkg/apis/networking/v1"
+	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/config/mesh/meshwatcher"
@@ -39,6 +41,7 @@ import (
 	"istio.io/istio/pkg/kube/krt/krttest"
 	"istio.io/istio/pkg/ptr"
 	"istio.io/istio/pkg/slices"
+	"istio.io/istio/pkg/test"
 	"istio.io/istio/pkg/test/util/assert"
 	"istio.io/istio/pkg/workloadapi"
 )
@@ -126,10 +129,12 @@ func TestServiceEntryServices(t *testing.T) {
 	}
 
 	cases := []struct {
-		name   string
-		inputs []any
-		se     *networkingclient.ServiceEntry
-		result []*workloadapi.Service
+		name                         string
+		inputs                       []any
+		se                           *networkingclient.ServiceEntry
+		enableSidecarWaypointRouting bool
+		wantWaypointBackend          types.NamespacedName
+		result                       []*workloadapi.Service
 		// waypointErr, when set, asserts the (single) resulting service's
 		// WaypointBindingStatus.Error -- the status surfaced when a binding is refused. The
 		// service builder result otherwise only carries the *workloadapi.Service, which drops it.
@@ -1543,9 +1548,71 @@ func TestServiceEntryServices(t *testing.T) {
 				},
 			},
 		},
+		{
+			name:                         "backend label without attachment",
+			enableSidecarWaypointRouting: true,
+			inputs:                       []any{waypoint, ns},
+			wantWaypointBackend: types.NamespacedName{
+				Name:      "waypoint",
+				Namespace: "ns",
+			},
+			se: &networkingclient.ServiceEntry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "ns",
+					Labels: map[string]string{
+						label.IoIstioWaypointBackend.Name: "waypoint",
+					},
+				},
+				Spec: networking.ServiceEntry{
+					Addresses: []string{"1.2.3.4"},
+					Hosts:     []string{"a.example.com", "b.example.com"},
+					Ports: []*networking.ServicePort{{
+						Number:   80,
+						Name:     "http",
+						Protocol: "HTTP",
+					}},
+					SubjectAltNames: []string{"san1"},
+					Resolution:      networking.ServiceEntry_DNS,
+				},
+			},
+			result: []*workloadapi.Service{
+				{
+					Name:      "name",
+					Namespace: "ns",
+					Hostname:  "a.example.com",
+					Addresses: []*workloadapi.NetworkAddress{{
+						Network: testNW,
+						Address: netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice(),
+					}},
+					Ports: []*workloadapi.Port{{
+						ServicePort: 80,
+						TargetPort:  80,
+						AppProtocol: workloadapi.AppProtocol_HTTP11,
+					}},
+					SubjectAltNames: []string{"san1"},
+				},
+				{
+					Name:      "name",
+					Namespace: "ns",
+					Hostname:  "b.example.com",
+					Addresses: []*workloadapi.NetworkAddress{{
+						Network: testNW,
+						Address: netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice(),
+					}},
+					Ports: []*workloadapi.Port{{
+						ServicePort: 80,
+						TargetPort:  80,
+						AppProtocol: workloadapi.AppProtocol_HTTP11,
+					}},
+					SubjectAltNames: []string{"san1"},
+				},
+			},
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
+			test.SetForTest(t, &features.EnableSidecarWaypointRouting, tt.enableSidecarWaypointRouting)
 			mock := krttest.NewMock(t, tt.inputs)
 			a := newAmbientUnitTest(t)
 			// Build a synchronous, precompiled visibility singleton from the mock mesh config.
@@ -1568,6 +1635,9 @@ func TestServiceEntryServices(t *testing.T) {
 			if tt.waypointErr != nil {
 				assert.Equal(t, len(wrapper), 1)
 				assert.Equal(t, wrapper[0].Waypoint.Error, tt.waypointErr)
+			}
+			for _, svc := range wrapper {
+				assert.Equal(t, svc.WaypointBackend, tt.wantWaypointBackend)
 			}
 		})
 	}
@@ -1741,10 +1811,12 @@ func TestServiceServices(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "ns", Labels: map[string]string{v1.LabelMetadataName: "ns"}},
 	}
 	cases := []struct {
-		name   string
-		inputs []any
-		svc    *v1.Service
-		result *workloadapi.Service
+		name                         string
+		inputs                       []any
+		svc                          *v1.Service
+		enableSidecarWaypointRouting bool
+		wantWaypointBackend          types.NamespacedName
+		result                       *workloadapi.Service
 	}{
 		{
 			name:   "simple",
@@ -2472,9 +2544,46 @@ func TestServiceServices(t *testing.T) {
 				Canonical: true,
 			},
 		},
+		{
+			name:                         "backend label without attachment",
+			enableSidecarWaypointRouting: true,
+			inputs:                       []any{primaryWaypoint, nsNS},
+			svc: &v1.Service{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "name",
+					Namespace: "ns",
+					Labels: map[string]string{
+						label.IoIstioWaypointBackend.Name: "waypoint",
+					},
+				},
+				Spec: v1.ServiceSpec{
+					ClusterIP: "1.2.3.4",
+					Ports:     []v1.ServicePort{{Port: 80, Name: "http"}},
+				},
+			},
+			result: &workloadapi.Service{
+				Name:      "name",
+				Namespace: "ns",
+				Hostname:  "name.ns.svc.domain.suffix",
+				Addresses: []*workloadapi.NetworkAddress{{
+					Network: testNW,
+					Address: netip.AddrFrom4([4]byte{1, 2, 3, 4}).AsSlice(),
+				}},
+				Ports: []*workloadapi.Port{{
+					ServicePort: 80,
+					AppProtocol: workloadapi.AppProtocol_HTTP11,
+				}},
+				Canonical: true,
+			},
+			wantWaypointBackend: types.NamespacedName{
+				Name:      "waypoint",
+				Namespace: "ns",
+			},
+		},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
+			test.SetForTest(t, &features.EnableSidecarWaypointRouting, tt.enableSidecarWaypointRouting)
 			mock := krttest.NewMock(t, tt.inputs)
 			a := newAmbientUnitTest(t)
 			builder := a.serviceServiceBuilder(
@@ -2488,6 +2597,7 @@ func TestServiceServices(t *testing.T) {
 				assert.Equal(t, nil, tt.result)
 			} else {
 				assert.Equal(t, res.Service, tt.result)
+				assert.Equal(t, res.WaypointBackend, tt.wantWaypointBackend)
 			}
 		})
 	}

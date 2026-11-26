@@ -23,6 +23,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 
 	"istio.io/api/label"
 	meshapi "istio.io/api/mesh/v1alpha1"
@@ -296,6 +297,20 @@ func serviceServiceBuilder(
 			Scope:         serviceScope,
 			CreationTime:  s.CreationTimestamp.Time,
 		}
+
+		backendWaypoint, backendStatus := fetchWaypointFromBackendLabels(
+			ctx, waypoints, namespaces, nil, s.ObjectMeta,
+		)
+		if backendStatus != nil {
+			log.Warnf("Unable to resolve waypoint backend for service %s/%s: %s",
+				s.Namespace, s.Name, backendStatus.Message)
+		} else if backendWaypoint != nil {
+			svcInfo.WaypointBackend = types.NamespacedName{
+				Name:      backendWaypoint.Name,
+				Namespace: backendWaypoint.Namespace,
+			}
+		}
+
 		if precompute {
 			return precomputeService(svcInfo)
 		}
@@ -506,8 +521,23 @@ func serviceEntriesInfo(
 	// Gate the visibility status on whether the feature is configured; an unset mesh writes no
 	// condition. The status value itself comes from the WDS Service.Visibility set above.
 	visibilityConfigured := vis.Configured()
+
 	services := constructServiceEntries(ctx, s, w, nsAnnotations, networkGetter)
 	result := make([]*model.ServiceInfo, 0, len(services))
+
+	var waypointBackend types.NamespacedName
+	bewp, status := fetchWaypointFromBackendLabels(
+		ctx, waypoints, namespaces, visibility, s.ObjectMeta,
+	)
+	if status != nil {
+		log.Warnf("Resolving waypoint backend for ServiceEntry %s/%s: %s", s.Namespace, s.Name, status.Message)
+	} else if bewp != nil {
+		waypointBackend = types.NamespacedName{
+			Name:      bewp.Name,
+			Namespace: bewp.Namespace,
+		}
+	}
+
 	for _, e := range services {
 		e.Visibility = wdsVisibility(resolvedVisibility)
 		e.IngressUseWaypoint = waypoint.IngressUseWaypoint
@@ -518,6 +548,7 @@ func serviceEntriesInfo(
 			LabelSelector:        sel,
 			Source:               MakeSource(s),
 			Waypoint:             waypoint,
+			WaypointBackend:      waypointBackend,
 			DNSConnectStrategy:   model.GetDNSConnectStrategy(s.Annotations),
 			CreationTime:         s.CreationTimestamp.Time,
 			VisibilityConfigured: visibilityConfigured,

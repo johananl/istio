@@ -27,6 +27,7 @@ import (
 	"google.golang.org/protobuf/types/known/structpb"
 	wrappers "google.golang.org/protobuf/types/known/wrapperspb"
 
+	"istio.io/api/label"
 	meshconfig "istio.io/api/mesh/v1alpha1"
 	networking "istio.io/api/networking/v1alpha3"
 	"istio.io/istio/pilot/pkg/features"
@@ -361,15 +362,22 @@ func (configgen *ConfigGeneratorImpl) buildClusters(proxy *model.Proxy, req *mod
 		_, wps := findWaypointResources(proxy, req.Push)
 		backendServices := wps.services
 		if features.EnableSidecarWaypointRouting && !isAmbientEastWestGateway(proxy) {
-			// Clients may still send requests through a waypoint after unenrollment using outdated
-			// routing configuration or existing connections. Keep backend clusters for visible
-			// services to avoid transient cluster_not_found errors during unenrollment, but keep
-			// listener filter chains and routes scoped to current attachments.
+			// Backend labels add clusters without changing attachment-based listeners or routes.
 			backendServices = make(map[host.Name]*model.Service)
+			waypointName := proxy.Labels[label.IoK8sNetworkingGatewayGatewayName.Name]
+
 			for _, svc := range proxy.SidecarScope.Services() {
 				if svc.Resolution == model.DynamicDNS && !svc.MeshExternal {
 					continue
 				}
+
+				info := req.Push.ServiceInfo(svc.Attributes.Namespace + "/" + svc.Hostname.String())
+				if info == nil || info.WaypointBackend.Name == "" ||
+					info.WaypointBackend.Name != waypointName ||
+					info.WaypointBackend.Namespace != proxy.ConfigNamespace {
+					continue
+				}
+
 				backendServices[svc.Hostname] = svc
 			}
 			for hostname, svc := range wps.services {

@@ -17,16 +17,20 @@ package ambient
 import (
 	"testing"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
 	"istio.io/api/annotation"
 	"istio.io/api/label"
+	"istio.io/istio/pilot/pkg/features"
 	"istio.io/istio/pilot/pkg/model"
 	"istio.io/istio/pkg/config/constants"
 	"istio.io/istio/pkg/kube/krt"
+	"istio.io/istio/pkg/kube/krt/krttest"
 	"istio.io/istio/pkg/ptr"
+	"istio.io/istio/pkg/test"
 	"istio.io/istio/pkg/test/util/assert"
 	"istio.io/istio/pkg/workloadapi"
 )
@@ -411,6 +415,93 @@ func TestServiceOwningWaypoints(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			got := serviceOwningWaypoints(&model.ServiceInfo{Service: tc.svc})
 			assert.Equal(t, got, tc.want)
+		})
+	}
+}
+
+func TestFetchWaypointFromBackendLabels(t *testing.T) {
+	cases := []struct {
+		name              string
+		featureDisabled   bool
+		labels            map[string]string
+		waypointNamespace string
+		fromNamespaces    gatewayv1.FromNamespaces
+		wantStatus        *model.StatusMessage
+	}{
+		{
+			name: "backend selected without attachment",
+			labels: map[string]string{
+				label.IoIstioWaypointBackend.Name: "waypoint-a",
+			},
+			waypointNamespace: "app",
+			fromNamespaces:    gatewayv1.NamespacesFromAll,
+		},
+		{
+			name: "backend namespace is independent of attachment namespace",
+			labels: map[string]string{
+				label.IoIstioWaypointBackend.Name:          "waypoint-a",
+				label.IoIstioWaypointBackendNamespace.Name: "infra",
+				label.IoIstioUseWaypoint.Name:              "waypoint-b",
+				label.IoIstioUseWaypointNamespace.Name:     "other",
+			},
+			waypointNamespace: "infra",
+			fromNamespaces:    gatewayv1.NamespacesFromAll,
+		},
+		{
+			name:            "feature disabled",
+			featureDisabled: true,
+			labels: map[string]string{
+				label.IoIstioWaypointBackend.Name: "waypoint-a",
+			},
+			waypointNamespace: "app",
+			fromNamespaces:    gatewayv1.NamespacesFromAll,
+		},
+		{
+			name: "cross-namespace attachment denied",
+			labels: map[string]string{
+				label.IoIstioWaypointBackend.Name:          "waypoint-a",
+				label.IoIstioWaypointBackendNamespace.Name: "infra",
+			},
+			waypointNamespace: "infra",
+			fromNamespaces:    gatewayv1.NamespacesFromSame,
+			wantStatus:        ReportWaypointAttachmentDenied("infra/waypoint-a"),
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			test.SetForTest(t, &features.EnableSidecarWaypointRouting, !tc.featureDisabled)
+
+			wp := Waypoint{
+				Named: krt.Named{
+					Name:      "waypoint-a",
+					Namespace: tc.waypointNamespace,
+				},
+				TrafficType: constants.ServiceTraffic,
+				AllowedRoutes: WaypointSelector{
+					FromNamespaces: tc.fromNamespaces,
+				},
+			}
+			mock := krttest.NewMock(t, []any{wp})
+
+			got, status := fetchWaypointFromBackendLabels(
+				krt.TestingDummyContext{},
+				krttest.GetMockCollection[Waypoint](mock),
+				krttest.GetMockCollection[*corev1.Namespace](mock),
+				nil,
+				metav1.ObjectMeta{
+					Name:      "svc",
+					Namespace: "app",
+					Labels:    tc.labels,
+				},
+			)
+			assert.Equal(t, status, tc.wantStatus)
+
+			var want *Waypoint
+			if !tc.featureDisabled && tc.wantStatus == nil {
+				want = &wp
+			}
+			assert.Equal(t, got, want)
 		})
 	}
 }
